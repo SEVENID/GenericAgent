@@ -62,11 +62,15 @@ HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conductor.
 parser = argparse.ArgumentParser()
 parser.add_argument("--host", default=HOST)
 parser.add_argument("--port", type=_parse_conductor_port, default=PORT)
-parser.add_argument("--key")
+parser.add_argument("--key", default=None, help="Auth key; auto-generated if not provided")
 parser.add_argument("--no-browser", action="store_true")
 args = parser.parse_args()
 if args.host not in ("127.0.0.1", "localhost", "::1") and not args.key:
     parser.error("--key is required for non-loopback listening")
+# Auto-generate a per-start key if none provided (prevents unauthenticated access)
+if not args.key:
+    args.key = secrets.token_hex(16)
+    print(f"[conductor] Auto-generated key: {args.key[:8]}... (full: {args.key})")
 HOST = args.host
 PORT = args.port
 
@@ -138,7 +142,7 @@ app = FastAPI(title="Conductor", lifespan=lifespan)
 LOCAL_ORIGIN = re.compile(r"^(https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?|tauri://localhost|https?://tauri\.localhost)$")
 app.add_middleware(CORSMiddleware, allow_origin_regex=LOCAL_ORIGIN.pattern, allow_methods=["*"], allow_headers=["*"])
 # 防 DNS rebinding；--key 远程模式或 ::1 监听时不启用
-if not args.key and args.host != "::1": app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+if args.host != "::1": app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
 class RemoteAuth:
     def __init__(self, app): self.app = app
@@ -146,7 +150,7 @@ class RemoteAuth:
         remote = (scope.get("client") or ("",))[0]
         got = dict(scope.get("headers", [])).get(b"authorization", b"")
         want = b"Basic " + base64.b64encode(f"conductor:{args.key}".encode())
-        if args.key and remote not in ("127.0.0.1", "::1") and not secrets.compare_digest(got, want):
+        if not secrets.compare_digest(got, want):
             if scope["type"] == "websocket": return await send({"type": "websocket.close", "code": 1008})
             return await PlainTextResponse("Unauthorized", 401, {"WWW-Authenticate": 'Basic realm="Conductor"'})(scope, receive, send)
         await self.app(scope, receive, send)
@@ -738,7 +742,7 @@ def api_approval(body: ApprovalIn):
 @app.websocket("/ws")
 async def websocket(ws: WebSocket):
     # WebSocket 不受 CORS 约束，需自行校验 Origin（非浏览器客户端不带 Origin，放行；--key 远程模式由 RemoteAuth 的 Basic 鉴权把关）
-    if (origin := ws.headers.get("origin")) and not args.key and not LOCAL_ORIGIN.match(origin): return await ws.close(code=1008)
+    if (origin := ws.headers.get("origin")) and not LOCAL_ORIGIN.match(origin): return await ws.close(code=1008)
     await ws.accept()
     ws_clients.add(ws)
     try:
