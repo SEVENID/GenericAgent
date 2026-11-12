@@ -177,7 +177,7 @@ def _derive_hist_info(history):
     return out
 
 
-_PREVIEW_WIN = 32 * 1024
+_PREVIEW_WIN = 256 * 1024  # 256KB head/tail window (#772: covers long initial tool loops)
 
 # Content-grep budget for `/continue` search box: read at most this many bytes
 # per session (head window) so 17MB files don't stall the UI. Empirically the

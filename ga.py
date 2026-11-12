@@ -385,6 +385,7 @@ class GenericAgentHandler(BaseHandler):
         self.parent = parent
         self.working = {}
         self.cwd = cwd;  self.current_turn = 0
+        self._ltm_called = False
         self.history_info = last_history if last_history else []
         self.code_stop_signal = []
         self._done_hooks = []
@@ -645,6 +646,19 @@ class GenericAgentHandler(BaseHandler):
                         "并明确是否还需要额外的实际操作。"
                     )
                     return StepOutcome({}, next_prompt=next_prompt)
+        # #789: Force long-term memory eval on long tasks
+        if (self.current_turn >= 15 and not self._ltm_called
+                and not getattr(self, 'autonomous_mode', False)
+                and 'start_long_term_update' not in getattr(self, 'banned_tools', [])):
+            self._ltm_called = True  # only force once
+            yield "[Info] Long task detected - evaluating long-term memory before completion.\n"
+            next_prompt = (
+                "[System] This task exceeded 15 turns. Before finalizing, "
+                "call start_long_term_update to evaluate whether any verified "
+                "facts, preferences, or lessons should be persisted to long-term memory. "
+                "If nothing qualifies, the tool will simply confirm and you can proceed."
+            )
+            return StepOutcome(response, next_prompt=next_prompt)
         #yield "[Info] Final response to user.\n"
         return StepOutcome(response, next_prompt=None)
     
@@ -654,6 +668,7 @@ class GenericAgentHandler(BaseHandler):
 先读后patch，将已验证、长期有用且难以重建的新知识融入旧条目，合并重复、压缩冗述，不堆叠流水账。以更少文字保留更高复用价值；无提纯价值则跳过，索引按需同步，非必要不可增加触发词。
 禁止：临时状态、推理过程、未验证信息、通用常识、易重建细节；不得将模型推测或建议记作用户要求。
 记忆整理仅是内部收尾；完成或跳过后，仍须向用户报告原任务结果。'''
+        self._ltm_called = True
         yield "[Info] Start distilling good memory for long-term storage.\n"
         path = os.path.join(script_dir, 'memory', 'memory_management_sop.md')
         if os.path.exists(path): result = 'This is L0:\n' + file_read(path, show_linenos=False)
