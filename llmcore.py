@@ -196,6 +196,7 @@ def _parse_claude_sse(resp_lines):
         except Exception as e:
             print(f"[SSE] JSON parse error: {e}, line: {data_str[:200]}")
             continue
+        if evt is None: continue  # heartbeat: data: null
         evt_type = evt.get("type", "")
         if evt_type == "message_start":
             usage = evt.get("message", {}).get("usage", {})
@@ -286,6 +287,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
             if data_str == "[DONE]": break
             try: evt = json.loads(data_str)
             except: continue
+            if evt is None: continue  # heartbeat: data: null
             etype = evt.get("type", "")
             if etype == "response.output_text.delta":
                 delta = evt.get("delta", "")
@@ -361,6 +363,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
             if data_str == "[DONE]": break
             try: evt = json.loads(data_str)
             except: continue
+            if evt is None: continue  # heartbeat: data: null
             ch = (evt.get("choices") or [{}])[0]
             delta = ch.get("delta") or {}
             if rc := delta.get("reasoning_content") or delta.get("reasoning", ""):
@@ -572,7 +575,20 @@ def _openai_stream(sess, messages):
     parse_fn = (lambda r: _parse_openai_sse(r.iter_lines(), api_mode)) if sess.stream else (lambda r: _parse_openai_json(r.json(), api_mode))
     return (yield from _stream_with_retry(sess, url, headers, payload, parse_fn))
         
+def _ensure_required_field(tools):
+    """Ensure every tool's parameters/input_schema has a 'required' list (strict gateways require it)."""
+    for t in tools:
+        fn = t.get("function") if t.get("type") == "function" else t
+        schema_key = "parameters" if "parameters" in fn else ("input_schema" if "input_schema" in fn else None)
+        if schema_key and isinstance(fn[schema_key], dict):
+            schema = fn[schema_key]
+            if "properties" in schema and "required" not in schema:
+                # Add required: [] (empty means no required fields, but the key must exist)
+                schema["required"] = []
+    return tools
+
 def _prepare_oai_tools(tools, api_mode="chat_completions"):
+    _ensure_required_field(tools)
     if api_mode == "responses":
         resp_tools = []
         for t in tools:
@@ -926,14 +942,21 @@ def _parse_text_tool_calls(content):
             return tcs, content[:idx].strip()
         except: pass
     # try XML tags: <tool_call>{"name":..., "arguments":...}</tool_call>
-    _xp = r"<(?:tool_use|tool_call)>((?:(?!<(?:tool_use|tool_call)>).){15,}?)</(?:tool_use|tool_call)>"
-    for s in re.findall(_xp, content, re.DOTALL):
+    _xp = r"<(?:tool_use|tool_call)>((?:(?!<(?:tool_use|tool_call)>).){5,}?)</(?:tool_use|tool_call)>"
+    xml_matches = re.findall(_xp, content, re.DOTALL)
+    for s in xml_matches:
         try:
             d = tryparse(s.strip()); name = d.get('name')
             args = d.get('arguments') or d.get('args') or d.get('input') or {}
             if name: tcs.append(MockToolCall(name, args))
-        except: pass
-    if tcs: content = re.sub(_xp, "", content, flags=re.DOTALL).strip()
+        except Exception as e:
+            # #863 fix: tag found but unparseable — still strip it, mark as invalid
+            print(f"[WARN] _parse_text_tool_calls: unparseable tool_call XML: {s[:100]}... ({e})")
+    if xml_matches:
+        content = re.sub(_xp, "", content, flags=re.DOTALL).strip()
+        # If we found tags but couldn't parse any, return a dummy error call
+        if not tcs:
+            tcs = [MockToolCall("_parse_error", {"msg": f"Detected {len(xml_matches)} tool_call XML tag(s) but failed to parse arguments"})]
     return tcs, content
 
 def _ensure_text_block(blocks):

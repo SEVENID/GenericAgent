@@ -615,9 +615,11 @@ class GenericAgentHandler(BaseHandler):
             return self._retry_or_exit("[ERROR] Blank response, regenerate and tooluse")
         if '[!!! 流异常中断' in content[-100:] or '!!!Error:' in content[50:][-100:] or (content.endswith('</summary>') and len(content) < 100):
             return self._retry_or_exit("[ERROR] Incomplete response. Regenerate and tooluse.")
-        tail = content.rstrip()[-50:]
-        if 'DSML' in tail and '｜' in tail and tail.endswith('>'):
-            return self._retry_or_exit("[ERROR] Tool call format invalid; no tool was called. Regenerate using proper tool calls.")
+        # #837 fix: DSML leak detection - check entire content, not just tail
+        if 'DSML' in content and '｜' in content:
+            # Match incomplete/leaked DSML tags (may be cut off)
+            if re.search(r'DSML[^<]*｜[^<]*>?$', content.rstrip()) or re.search(r'<DSML[^>]*｜[^>]*>?', content):
+                return self._retry_or_exit("[ERROR] Tool call format invalid (DSML leak); no tool was called. Regenerate using proper tool calls.")
         if 'max_tokens !!!]' in content[-100:]:
             return self._retry_or_exit("[ERROR] max_tokens limit reached. Use multi small steps to do it.")
         
