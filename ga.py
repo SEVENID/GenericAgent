@@ -476,7 +476,10 @@ class GenericAgentHandler(BaseHandler):
         script = args.get("script", "") or self._extract_code_block(response, "javascript")
         if not isinstance(script, str): script = json.dumps(script, ensure_ascii=False, default=json_default) if isinstance(script, (dict, list)) else str(script)
         if not script or not script.strip(): return StepOutcome("[Error] Script missing. Use ```javascript block or 'script' arg.", next_prompt="\n")
-        abs_path = self._get_abs_path(script.strip())
+        try:
+            abs_path = self._get_abs_path(script.strip())
+        except PermissionError:
+            abs_path = script.strip()
         if os.path.isfile(abs_path):
             with open(abs_path, 'r', encoding='utf-8') as f: script = f.read()
         save_to_file = args.get("save_to_file", "")
@@ -485,7 +488,10 @@ class GenericAgentHandler(BaseHandler):
         result = web_execute_js(script, switch_tab_id=switch_tab_id, no_monitor=no_monitor)
         if save_to_file and "js_return" in result:
             content = str(result["js_return"] or '')
-            abs_path = self._get_abs_path(save_to_file)
+            try:
+                abs_path = self._get_abs_path(save_to_file)
+            except PermissionError:
+                abs_path = save_to_file
             result["js_return"] = smart_format(content, max_str_len=170)
             try:
                 with open(abs_path, 'w', encoding='utf-8') as f: f.write(str(content))
@@ -500,7 +506,11 @@ class GenericAgentHandler(BaseHandler):
         return StepOutcome(smart_format(result, max_str_len=maxlen), next_prompt=next_prompt)
     
     def do_file_patch(self, args, response):
-        path = self._get_abs_path(args.get("path", ""))
+        try:
+            path = self._get_abs_path(args.get("path", ""))
+        except PermissionError as e:
+            yield f"\n[Action] ⛔ {e}\n"
+            return StepOutcome({"status": "error", "msg": str(e) + " Suggestion: use code_run to edit files outside cwd."}, next_prompt="\n")
         # Security gate: protected path check
         if is_protected_path(path) and not args.get('_protected_override'):
             yield f"[SECURITY] ⚠️  Protected path: {path}\n"
@@ -524,7 +534,11 @@ class GenericAgentHandler(BaseHandler):
     def do_file_write(self, args, response):
         '''用于对整个文件的大量处理，精细修改要用file_patch。
         需要将要写入的内容放在<file_content>标签内，或者放在代码块中'''
-        path = self._get_abs_path(args.get("path", ""))
+        try:
+            path = self._get_abs_path(args.get("path", ""))
+        except PermissionError as e:
+            yield f"\n[Action] ⛔ {e}\n"
+            return StepOutcome({"status": "error", "msg": str(e) + " Suggestion: use code_run to write files outside cwd."}, next_prompt="\n")
         # Security gate: protected path check
         if is_protected_path(path) and not args.get('_protected_override'):
             yield f"[SECURITY] ⚠️  Protected path: {path}\n"
@@ -579,7 +593,11 @@ class GenericAgentHandler(BaseHandler):
         
     def do_file_read(self, args, response):
         '''读取文件内容。从第start行开始读取。如有keyword则返回第一个keyword(忽略大小写)周边内容'''
-        path = self._get_abs_path(args.get("path", ""))
+        try:
+            path = self._get_abs_path(args.get("path", ""))
+        except PermissionError as e:
+            yield f"\n[Action] ⛔ {e}\n"
+            return StepOutcome({"status": "error", "msg": str(e) + " Suggestion: use code_run (cat/head) to read files outside cwd."}, next_prompt="\n")
         yield f"\n[Action] Reading file: {path}\n"
         start = _arg(args, "start", 1, int)
         count = _arg(args, "count", 200, int)
