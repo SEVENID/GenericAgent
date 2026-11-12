@@ -1,13 +1,15 @@
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from concurrent.futures import ThreadPoolExecutor
 from time import time, sleep
-import html, io, json, os, re, subprocess, sys, tempfile, threading, traceback, urllib.request, webbrowser
+import html, io, json, os, re, secrets, subprocess, sys, tempfile, threading, traceback, urllib.request, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 __all__ = ["plan", "phase", "parallel", "mapchain"]
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PORT = int(os.environ.get("GA_ULTRAPLAN_PORT", "47831"))
+_TOKEN_FILE = os.path.join(tempfile.gettempdir(), f".ga_ultraplan_token_{_PORT}")
+_TOKEN = secrets.token_urlsafe(16)
 _T0 = time(); _phases = []; _phase_stack = []; _tasks = []; _current = "idle"; _events = []; _srv = None; _last = time(); _lock = threading.Lock(); _exec_lock = threading.Lock()
 _TASK_SLUG = "task"; _FUNC_SEQ = 0; _PLANNED = False; _SESSION = None; _sessions = {}
 _RUN_DIR = os.path.abspath(os.environ.get("GA_ULTRAPLAN_RUNDIR", os.path.join(_ROOT, "temp", "ultraplan_default")))
@@ -71,6 +73,10 @@ class _H(BaseHTTPRequestHandler):
     def do_POST(self):
         global _TASK_SLUG, _PLANNED
         if self.path != "/exec": self.send_response(404); self.end_headers(); return
+        # Auth check
+        got_token = self.headers.get("X-GA-Token", "")
+        if not secrets.compare_digest(got_token, _TOKEN):
+            self.send_response(401); self.end_headers(); return
         n = int(self.headers.get("Content-Length", "0")); req = json.loads(self.rfile.read(n).decode("utf-8"))
         out = io.StringIO(); err = io.StringIO(); rc = 0
         with _exec_lock, redirect_stdout(out), redirect_stderr(err):
@@ -93,6 +99,9 @@ class _H(BaseHTTPRequestHandler):
 def _serve_daemon():
     global _srv
     sys.modules.setdefault("assets.ga_ultraplan", sys.modules[__name__])
+    # Write token file so client processes can authenticate
+    with open(_TOKEN_FILE, "w") as _f: _f.write(_TOKEN)
+    os.chmod(_TOKEN_FILE, 0o600)
     _srv = ThreadingHTTPServer(("127.0.0.1", _PORT), _H); _srv.timeout = 60; url = f"http://127.0.0.1:{_PORT}/"
     print(f"[ultraplan] {url}", flush=True)
     if os.environ.get("GA_ULTRAPLAN_BROWSER") != "0": webbrowser.open(url)
@@ -116,8 +125,10 @@ def plan(rundir):
     _PLANNED = True; _bind(rundir); _save_session()
     if os.environ.get("GA_ULTRAPLAN_DAEMON") == "1": return
     _show(); path = os.path.abspath(sys.argv[0]); code = open(path, encoding="utf-8").read()
+    # Read token written by daemon
+    _tok = open(_TOKEN_FILE).read().strip() if os.path.exists(_TOKEN_FILE) else ""
     data = json.dumps({"path": path, "cwd": os.getcwd(), "rundir": _RUN_DIR, "task": _task_slug(path), "code": code}).encode("utf-8")
-    r = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{_PORT}/exec", data=data, headers={"Content-Type":"application/json"}), timeout=None)
+    r = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{_PORT}/exec", data=data, headers={"Content-Type":"application/json", "X-GA-Token":_tok}), timeout=None)
     resp = json.loads(r.read().decode("utf-8")); sys.stdout.write(resp.get("stdout", "")); sys.stderr.write(resp.get("stderr", "")); sys.exit(resp.get("returncode", 1))
 
 @contextmanager

@@ -379,6 +379,9 @@
     const downloadDialog = document.getElementById('downloadDialog');
     const downloadPath = document.getElementById('downloadPath');
     let ws, fileDir='', fileParent='';
+    let _gaToken='';
+    fetch('/auth').then(r=>r.json()).then(d=>{_gaToken=d.token||''}).catch(()=>{});
+    const _authH = ()=> _gaToken ? {'X-GA-Token':_gaToken} : {};
 
     function esc(s){ return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
     function renderMd(s){ try { return marked.parse(String(s||'').replace(/</g,'&lt;'), { breaks: true, gfm: true }); } catch(e){ return esc(s); } }
@@ -407,7 +410,7 @@
     async function uploadFiles(files){
       const paths=[];
       for(const file of files){
-        const r=await fetch('/file?name='+encodeURIComponent(file.name),{method:'POST',body:file});
+        const r=await fetch('/file?name='+encodeURIComponent(file.name),{method:'POST',headers:{..._authH()},body:file});
         if(!r.ok) throw Error(await r.text());
         paths.push('`'+(await r.json()).path+'`');
       }
@@ -466,7 +469,7 @@
         const card = btn.closest('.approval');
         const act = btn.dataset.act;
         const prompt = card.querySelector('.appr-prompt').value;
-        if(act==='ok') fetch('/subagent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt})});
+        if(act==='ok') fetch('/subagent',{method:'POST',headers:{'Content-Type':'application/json',..._authH()},body:JSON.stringify({prompt})});
         card.remove();
         const left = apprBody.querySelectorAll('.approval').length;
         apprBadge.textContent = left;

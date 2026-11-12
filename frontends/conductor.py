@@ -67,6 +67,10 @@ parser.add_argument("--no-browser", action="store_true")
 args = parser.parse_args()
 if args.host not in ("127.0.0.1", "localhost", "::1") and not args.key:
     parser.error("--key is required for non-loopback listening")
+# Always require a key (auto-generate for loopback if not provided)
+if not args.key:
+    args.key = secrets.token_urlsafe(24)
+    print(f"[conductor] auto-generated key: {args.key[:8]}... (full key in env for API clients)")
 HOST = args.host
 PORT = args.port
 
@@ -136,22 +140,42 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Conductor", lifespan=lifespan)
 # 只放行本机页面（conductor.html 同源 / 桌面端 Tauri / vite dev），防恶意网页跨站调用
 LOCAL_ORIGIN = re.compile(r"^(https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?|tauri://localhost|https?://tauri\.localhost)$")
-app.add_middleware(CORSMiddleware, allow_origin_regex=LOCAL_ORIGIN.pattern, allow_methods=["*"], allow_headers=["*"])
-# 防 DNS rebinding；--key 远程模式或 ::1 监听时不启用
-if not args.key and args.host != "::1": app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+app.add_middleware(CORSMiddleware, allow_origin_regex=LOCAL_ORIGIN.pattern, allow_methods=["*"], allow_headers=["*", "X-GA-Token"])
+# 防 DNS rebinding（::1 监听时不启用，因为 IPv6 loopback 无 hostname）
+if args.host != "::1":
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
 class RemoteAuth:
+    """Require auth for all mutating (non-GET) requests, even from loopback.
+    Accepts Basic auth (for API/CLI clients) or X-GA-Token header (for HTML frontend).
+    """
     def __init__(self, app): self.app = app
     async def __call__(self, scope, receive, send):
-        remote = (scope.get("client") or ("",))[0]
-        got = dict(scope.get("headers", [])).get(b"authorization", b"")
-        want = b"Basic " + base64.b64encode(f"conductor:{args.key}".encode())
-        if args.key and remote not in ("127.0.0.1", "::1") and not secrets.compare_digest(got, want):
-            if scope["type"] == "websocket": return await send({"type": "websocket.close", "code": 1008})
+        method = scope.get("method", "GET")
+        # Allow GET (read-only) and WebSocket (protected by Origin check) without token
+        if method == "GET" or scope["type"] == "websocket":
+            return await self.app(scope, receive, send)
+        headers = dict(scope.get("headers", []))
+        # Check X-GA-Token header (frontend)
+        token = headers.get(b"x-ga-token", b"").decode("latin1")
+        if secrets.compare_digest(token, args.key):
+            return await self.app(scope, receive, send)
+        # Check Basic auth (API/CLI clients): "conductor:<key>"
+        got = headers.get(b"authorization", b"").decode("latin1")
+        want = "Basic " + base64.b64encode(f"conductor:{args.key}".encode()).decode()
+        if secrets.compare_digest(got, want):
+            return await self.app(scope, receive, send)
+        # Reject
+        if scope["type"] == "http":
             return await PlainTextResponse("Unauthorized", 401, {"WWW-Authenticate": 'Basic realm="Conductor"'})(scope, receive, send)
-        await self.app(scope, receive, send)
+        await send({"type": "websocket.close", "code": 1008})
 
 app.add_middleware(RemoteAuth)
+
+@app.get("/auth")
+def get_auth_token():
+    """Distribute token to same-origin clients (HTML frontend)."""
+    return {"token": args.key}
 
 class ChatIn(BaseModel):
     msg: str
