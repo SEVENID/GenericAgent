@@ -196,7 +196,7 @@ def _parse_claude_sse(resp_lines):
         except Exception as e:
             print(f"[SSE] JSON parse error: {e}, line: {data_str[:200]}")
             continue
-        if evt is None: continue  # heartbeat: data: null
+        if not isinstance(evt, dict): continue  # heartbeat: null or non-object
         evt_type = evt.get("type", "")
         if evt_type == "message_start":
             usage = evt.get("message", {}).get("usage", {})
@@ -287,7 +287,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
             if data_str == "[DONE]": break
             try: evt = json.loads(data_str)
             except: continue
-            if evt is None: continue  # heartbeat: data: null
+            if not isinstance(evt, dict): continue  # heartbeat: null or non-object
             etype = evt.get("type", "")
             if etype == "response.output_text.delta":
                 delta = evt.get("delta", "")
@@ -342,8 +342,8 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
                 if emsg: content_text += f"!!!Error: {emsg}"; yield f"!!!Error: {emsg}"
                 break
         blocks = []
-        if reasoning_text: blocks.append({"type": "thinking", "thinking": reasoning_text})
-        if content_text: blocks.append({"type": "text", "text": content_text})
+        if reasoning_text and reasoning_text.strip(): blocks.append({"type": "thinking", "thinking": reasoning_text})
+        if content_text and content_text.strip(): blocks.append({"type": "text", "text": content_text})
         for idx in sorted(fc_buf):
             fc = fc_buf[idx]
             inps = _try_parse_tool_args(fc["args"])
@@ -363,7 +363,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
             if data_str == "[DONE]": break
             try: evt = json.loads(data_str)
             except: continue
-            if evt is None: continue  # heartbeat: data: null
+            if not isinstance(evt, dict): continue  # heartbeat: null or non-object
             ch = (evt.get("choices") or [{}])[0]
             delta = ch.get("delta") or {}
             if rc := delta.get("reasoning_content") or delta.get("reasoning", ""):
@@ -560,6 +560,7 @@ def _openai_stream(sess, messages):
                    'include': ['reasoning.encrypted_content']}
         if sess.reasoning_effort: payload["reasoning"] = {"effort": sess.reasoning_effort}
         if sess.max_tokens: payload["max_output_tokens"] = sess.max_tokens
+        if temperature != 1: payload["temperature"] = temperature
     else:
         url = auto_make_url(sess.api_base, "chat/completions")
         if sess.system: messages = [{"role": "system", "content": sess.system}] + messages
@@ -576,15 +577,16 @@ def _openai_stream(sess, messages):
     return (yield from _stream_with_retry(sess, url, headers, payload, parse_fn))
         
 def _ensure_required_field(tools):
-    """Ensure every tool's parameters/input_schema has a 'required' list (strict gateways require it)."""
+    """Ensure every tool's parameters/input_schema has a 'required' list.
+    Strict gateways reject schemas with missing 'required' (serialized as null).
+    Copies schema instead of mutating the shared object."""
     for t in tools:
         fn = t.get("function") if t.get("type") == "function" else t
         schema_key = "parameters" if "parameters" in fn else ("input_schema" if "input_schema" in fn else None)
         if schema_key and isinstance(fn[schema_key], dict):
             schema = fn[schema_key]
-            if "properties" in schema and "required" not in schema:
-                # Add required: [] (empty means no required fields, but the key must exist)
-                schema["required"] = []
+            if "required" not in schema:
+                fn[schema_key] = {**schema, "required": []}
     return tools
 
 def _prepare_oai_tools(tools, api_mode="chat_completions"):
