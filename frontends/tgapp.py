@@ -48,10 +48,10 @@ _ASK_CANCEL_ACTION = "none"
 _ASK_MULTI_DONE_ACTION = "done"
 _ASK_TOGGLE_ACTION = "toggle"
 _ASK_CANCEL_LABEL = "none of these above"
-_ASK_CANCEL_PROMPT = "已取消选择，请直接发送下一步操作。"
-_ASK_MULTI_HINT = "可多选：点选项目后点击 Done 提交。"
-_ASK_MULTI_EMPTY_HINT = "请至少选择一项，或选择 none of these above。"
-_LLM_MENU_PROMPT = "请选择要切换的 LLM："
+_ASK_CANCEL_PROMPT = "Selection cancelled. Please send your next instruction directly."
+_ASK_MULTI_HINT = "Multi-select: tap items then click Done to submit."
+_ASK_MULTI_EMPTY_HINT = "Select at least one item, or choose 'none of these above'."
+_LLM_MENU_PROMPT = "Select LLM to switch to:"
 _ask_menu_events = Q.Queue()
 _ask_menu_store = {}
 _llm_menu_store = {}
@@ -273,7 +273,7 @@ def _extract_ask_user_event(ctx):
             candidates.append(text)
     if not candidates:
         return None
-    question = str(data.get("question") or "请选择下一步操作：").strip() or "请选择下一步操作："
+    question = str(data.get("question") or "Select next action:").strip() or "Select next action:"
     return {
         "question": question,
         "candidates": candidates,
@@ -348,14 +348,14 @@ def _normalize_ask_menu_event(stored):
     if isinstance(stored, dict):
         candidates = stored.get("candidates") or []
         return {
-            "question": str(stored.get("question") or "请选择下一步操作：").strip() or "请选择下一步操作：",
+            "question": str(stored.get("question") or "Select next action:").strip() or "Select next action:",
             "candidates": [str(candidate).strip() for candidate in candidates if str(candidate).strip()],
             "multi": bool(stored.get("multi")),
             "selected": [int(idx) for idx in stored.get("selected", []) if isinstance(idx, int)],
         }
     if isinstance(stored, (list, tuple)):
         return {
-            "question": "请选择下一步操作：",
+            "question": "Select next action:",
             "candidates": [str(candidate).strip() for candidate in stored if str(candidate).strip()],
             "multi": False,
             "selected": [],
@@ -363,17 +363,17 @@ def _normalize_ask_menu_event(stored):
     return None
 
 def _render_ask_user_result(event, selected=None, cancelled=False):
-    question = str(event.get("question") or "请选择下一步操作：").strip() or "请选择下一步操作："
+    question = str(event.get("question") or "Select next action:").strip() or "Select next action:"
     candidates = event.get("candidates") or []
-    lines = [question, "", "选项："]
+    lines = [question, "", "Options:"]
     for idx, candidate in enumerate(candidates, start=1):
         lines.append(f"{idx}. {candidate}")
     lines.append(f"{len(candidates) + 1}. {_ASK_CANCEL_LABEL}")
     lines.append("")
     if cancelled:
-        lines.append(f"已取消：{_ASK_CANCEL_LABEL}")
+        lines.append(f"Cancelled: {_ASK_CANCEL_LABEL}")
     elif selected:
-        lines.append(f"已选择：{selected}")
+        lines.append(f"Selected: {selected}")
     text = "\n".join(lines)
     if len(text) > MessageLimit.MAX_TEXT_LENGTH:
         text = text[:MessageLimit.MAX_TEXT_LENGTH - 18].rstrip() + "\n...[truncated]"
@@ -532,7 +532,7 @@ class _TelegramStreamSession:
         self.files = _files_from_text(cleaned)
         body = _inject_turn_summary(_render_file_markers(cleaned), summary)
         if done and not body and self.files:
-            body = "已生成附件"
+            body = "Attachment generated"
         elif done and not body:
             body = "..."
         segments = _visible_segments(body)
@@ -833,7 +833,7 @@ async def _stream(dq, msg):
                     await _send_ask_user_menu(msg, event)
                 break
     except asyncio.CancelledError:
-        await stream.finish_with_notice("⏹️ 已停止")
+        await stream.finish_with_notice("⏹️ Stopped")
     except RetryAfter as exc:
         print(f"[TG stream retry_after] {type(exc).__name__}: {exc}", flush=True)
         if stream.session is not None:
@@ -843,7 +843,7 @@ async def _stream(dq, msg):
         if stream.session is not None and stream.session._is_retrying():
             return
         try:
-            await stream.finish_with_notice(f"❌ 输出失败: {exc}")
+            await stream.finish_with_notice(f"❌ Output failed: {exc}")
         except RetryAfter as retry_exc:
             print(f"[TG stream error notice retry_after] {type(retry_exc).__name__}: {retry_exc}", flush=True)
 
@@ -885,7 +885,7 @@ async def _handle_review_command(update, ctx, cmd):
             item = dq.get_nowait()
             return await _reply_command_text(update.message, item.get("done", ""))
         except Q.Empty:
-            return await _reply_command_text(update.message, "(review 无输出)")
+            return await _reply_command_text(update.message, "(review: no output)")
     _cancel_stream_task(ctx)
     task_dq = agent.put_task(prompt, source="telegram")
     task = asyncio.create_task(_stream(task_dq, update.message))
@@ -909,10 +909,10 @@ async def handle_ask_callback(update, ctx):
         return await query.answer("no", show_alert=True)
     menu_id, action = _parse_ask_callback_data(query.data)
     if not menu_id:
-        return await query.answer("菜单无效")
+        return await query.answer("Invalid menu")
     event = _normalize_ask_menu_event(_ask_menu_store.get(menu_id))
     if event is None:
-        await query.answer("菜单已过期")
+        await query.answer("Menu expired")
         return await _clear_ask_reply_markup(query)
     candidates = event["candidates"]
     if event.get("multi") and action.startswith(f"{_ASK_TOGGLE_ACTION}:"):
@@ -921,10 +921,10 @@ async def handle_ask_callback(update, ctx):
             if selected_idx < 0 or selected_idx >= len(candidates):
                 raise ValueError
         except ValueError:
-            return await query.answer("菜单无效")
+            return await query.answer("Invalid menu")
         stored = _ask_menu_store.get(menu_id)
         if not isinstance(stored, dict):
-            return await query.answer("菜单已过期")
+            return await query.answer("Menu expired")
         selected = set(stored.get("selected", []))
         if selected_idx in selected:
             selected.remove(selected_idx)
@@ -964,7 +964,7 @@ async def handle_ask_callback(update, ctx):
     try:
         selected = candidates[int(action)]
     except (ValueError, IndexError):
-        return await query.answer("菜单无效")
+        return await query.answer("Invalid menu")
     _ask_menu_store.pop(menu_id, None)
     await query.answer()
     await _edit_ask_user_result(query, event, selected=selected)
@@ -977,7 +977,7 @@ async def handle_ask_callback(update, ctx):
 async def _send_llm_menu(message):
     llms = agent.list_llms()
     if not llms:
-        return await message.reply_text("没有可用模型。")
+        return await message.reply_text("No available models.")
     menu_id = uuid.uuid4().hex[:16]
     _llm_menu_store[menu_id] = [idx for idx, _, _ in llms]
     lines = [f"{'→' if cur else '  '} [{idx}] {name}" for idx, name, cur in llms]
@@ -1000,30 +1000,30 @@ async def handle_llm_callback(update, ctx):
         return await query.answer("no", show_alert=True)
     menu_id, action = _parse_menu_callback_data(query.data, _LLM_CALLBACK_PREFIX)
     if not menu_id:
-        return await query.answer("菜单无效")
+        return await query.answer("Invalid menu")
     valid_indexes = _llm_menu_store.get(menu_id)
     if valid_indexes is None:
-        await query.answer("菜单已过期")
+        await query.answer("Menu expired")
         return await _clear_ask_reply_markup(query)
     try:
         selected_idx = int(action)
     except (TypeError, ValueError):
-        return await query.answer("菜单无效")
+        return await query.answer("Invalid menu")
     if selected_idx not in valid_indexes:
-        return await query.answer("菜单已过期", show_alert=True)
+        return await query.answer("Menu expired", show_alert=True)
     try:
         agent.next_llm(selected_idx)
         selected_name = agent.get_llm_name()
     except Exception as exc:
-        return await query.answer(f"切换失败: {exc}", show_alert=True)
+        return await query.answer(f"Switch failed: {exc}", show_alert=True)
     _llm_menu_store.pop(menu_id, None)
-    await query.answer(f"已切换到 [{selected_idx}] {selected_name}")
-    await query.edit_message_text(f"✅ 已切换到 [{selected_idx}] {selected_name}")
+    await query.answer(f"Switched to [{selected_idx}] {selected_name}")
+    await query.edit_message_text(f"✅ Switched to [{selected_idx}] {selected_name}")
 
 async def cmd_abort(update, ctx):
     _cancel_stream_task(ctx)
     agent.abort()
-    await update.message.reply_text("⏹️ 正在停止...")
+    await update.message.reply_text("⏹️ Stopping...")
 
 async def cmd_llm(update, ctx):
     args = (update.message.text or '').split()
@@ -1031,9 +1031,9 @@ async def cmd_llm(update, ctx):
         try:
             n = int(args[1])
             agent.next_llm(n)
-            await update.message.reply_text(f"✅ 已切换到 [{agent.llm_no}] {agent.get_llm_name()}")
+            await update.message.reply_text(f"✅ Switched to [{agent.llm_no}] {agent.get_llm_name()}")
         except (ValueError, IndexError):
-            await update.message.reply_text(f"用法: /llm <0-{len(agent.list_llms())-1}>")
+            await update.message.reply_text(f"Usage: /llm <0-{len(agent.list_llms())-1}>")
     else:
         await _send_llm_menu(update.message)
 
@@ -1044,17 +1044,17 @@ async def handle_photo(update, ctx):
         photo = update.message.photo[-1]
         file = await photo.get_file()
         fpath = f"tg_{photo.file_unique_id}.jpg"
-        kind = "图片"
+        kind = "image"
     elif update.message.document:
         doc = update.message.document
         file = await doc.get_file()
         ext = os.path.splitext(doc.file_name or '')[1] or ''
         fpath = f"tg_{doc.file_unique_id}{ext}"
-        kind = "文件"
+        kind = "file"
     else: return
     await file.download_to_drive(os.path.join(_TEMP_DIR, fpath))
     caption = update.message.caption
-    prompt = f"[TIPS] 收到{kind}temp/{fpath}\n{caption}" if caption else f"[TIPS] 收到{kind}temp/{fpath}，请等待下一步指令"
+    prompt = f"[TIPS] Received {kind}: temp/{fpath}\n{caption}" if caption else f"[TIPS] Received {kind}: temp/{fpath}, awaiting your next instruction"
     dq = agent.put_task(prompt, source="telegram")
     task = asyncio.create_task(_stream(dq, update.message))
     ctx.user_data['stream_task'] = task
@@ -1067,8 +1067,8 @@ async def handle_command(update, ctx):
     op = cmd.split()[0] if cmd else ''
     if op == '/help': return await update.message.reply_text(HELP_TEXT)
     if op == '/status':
-        llm = agent.get_llm_name() if agent.llmclient else '未配置'
-        return await update.message.reply_text(f"状态: {'🔴 运行中' if agent.is_running else '🟢 空闲'}\nLLM: [{agent.llm_no}] {llm}")
+        llm = agent.get_llm_name() if agent.llmclient else 'not configured'
+        return await update.message.reply_text(f"Status: {'🔴 Running' if agent.is_running else '🟢 Idle'}\nLLM: [{agent.llm_no}] {llm}")
     if op == '/stop': return await cmd_abort(update, ctx)
     if op == '/llm': return await cmd_llm(update, ctx)
     if op == '/btw':
@@ -1088,9 +1088,9 @@ async def handle_command(update, ctx):
             restored, fname, count = restored_info
             agent.abort()
             agent.history.extend(restored)
-            return await update.message.reply_text(f"✅ 已恢复 {count} 轮对话\n来源: {fname}\n(仅恢复上下文，请输入新问题继续)")
+            return await update.message.reply_text(f"✅ Restored {count} conversation turns\nSource: {fname}\n(Context only restored - send a new message to continue)")
         except Exception as e:
-            return await update.message.reply_text(f"❌ 恢复失败: {e}")
+            return await update.message.reply_text(f"❌ Restore failed: {e}")
     if op == '/continue':
         if cmd != '/continue': _cancel_stream_task(ctx)
         return await update.message.reply_text(handle_frontend_command(agent, cmd))
@@ -1109,7 +1109,18 @@ if __name__ == '__main__':
     if proxy:
         print('proxy:', proxy)
     else:
-        print('proxy: <disabled>')
+        # Auto-detect a working local proxy (tor/xray/sing-box)
+        import socket as _socket
+        for port in (9050, 1080, 1087, 1089, 7890, 8080):
+            try:
+                s = _socket.socket(); s.settimeout(1); s.connect(('127.0.0.1', port)); s.close()
+                proxy = f'socks5://127.0.0.1:{port}'
+                print(f'proxy: {proxy} (auto-detected)')
+                break
+            except Exception:
+                pass
+        if not proxy:
+            print('proxy: <disabled>')
 
     async def _error_handler(update, context: ContextTypes.DEFAULT_TYPE):
         print(f"[{time.strftime('%m-%d %H:%M')}] TG error: {context.error}", flush=True)

@@ -1,17 +1,13 @@
 // background.js - Cookie + CDP Bridge
 chrome.runtime.onInstalled.addListener(() => {
   console.log('CDP Bridge installed');
-  // Strip CSP headers to allow eval/inline scripts
+  // Note: We do NOT strip CSP headers globally.
+  // CSP-restricted pages are handled by the CDP fallback (Runtime.evaluate)
+  // which is more secure and avoids downgrading browser security for all tabs.
+  // Clean up any previously-added global CSP rule (id 9999) from older versions.
   chrome.declarativeNetRequest.updateDynamicRules({
     removeRuleIds: [9999],
-    addRules: [{
-      id: 9999, priority: 1,
-      action: { type: 'modifyHeaders', responseHeaders: [
-        { header: 'content-security-policy', operation: 'remove' },
-        { header: 'content-security-policy-report-only', operation: 'remove' }
-      ]},
-      condition: { urlFilter: '*', resourceTypes: ['main_frame', 'sub_frame'] }
-    }]
+    addRules: []
   });
 });
 

@@ -80,6 +80,11 @@ COMMANDS = {
         "desc": "以原生窗口形式包装 stapp Web 界面（基于 pywebview）",
         "cmd": ["python", "{PROJECT_DIR}/launch.pyw"],
     },
+    "tg": {
+        "help": "启动 Telegram bot (tgapp)",
+        "desc": "启动 Telegram 机器人聊天界面（需要 mykey.py 中配置 tg_bot_token）",
+        "cmd": ["python", "{FRONTENDS}/tgapp.py"],
+    },
     "status": {
         "help": "检查运行状态",
         "desc": "检查当前是否已有 GenericAgent 进程在运行",

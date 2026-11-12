@@ -1,0 +1,6 @@
+export PORTABLE_DEV_ROOT="/root/GenericAgent/.portable"
+export GENERICAGENT_HOME="/root/GenericAgent"
+export UV_PYTHON_INSTALL_DIR="/root/GenericAgent/.portable/uv-python"
+export UV_CACHE_DIR="/root/GenericAgent/.portable/uv-cache"
+export PATH="/root/GenericAgent/.portable/bin:/root/GenericAgent/.portable/uv-python/cpython-3.12-linux-x86_64-gnu/bin:$PATH"
+echo "Activated GenericAgent portable env: $GENERICAGENT_HOME"

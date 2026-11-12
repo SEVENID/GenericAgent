@@ -245,6 +245,15 @@ if __name__ == '__main__':
     args, _unknown = parser.parse_known_args()
     _extra_args = dict(zip([k.lstrip('-') for k in _unknown[::2]], _unknown[1::2])) if _unknown else {}
 
+    # Security gate: sub-agent depth cap
+    if args.func or args.task:
+        _ga_depth = int(os.environ.get('GA_DEPTH', '0'))
+        _MAX_DEPTH = int(os.environ.get('GA_MAX_DEPTH', '4'))
+        if _ga_depth >= _MAX_DEPTH:
+            print(f'[SECURITY] Sub-agent depth limit reached ({_ga_depth}/{_MAX_DEPTH}). Cannot spawn further sub-agents.')
+            sys.exit(1)
+        os.environ['GA_DEPTH'] = str(_ga_depth + 1)
+
     if (args.func or args.task) and not args.nobg:
         import subprocess, platform
         cmd = [sys.executable, os.path.abspath(__file__)] + [a for a in sys.argv[1:]] + ['--nobg']

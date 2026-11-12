@@ -1,4 +1,4 @@
-import sys, os, re, json, time, threading, importlib, webbrowser
+import sys, os, re, json, time, threading, importlib, webbrowser, signal
 from datetime import datetime
 from pathlib import Path
 import tempfile, traceback, subprocess, itertools, collections, difflib, shutil
@@ -9,9 +9,95 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from agent_loop import BaseHandler, StepOutcome, json_default
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
+# ─── Security: Protected Paths ────────────────────────────────────────────────
+PROTECTED_PATHS = [
+    # Agent core source
+    os.path.join(script_dir, 'ga.py'),
+    os.path.join(script_dir, 'agentmain.py'),
+    os.path.join(script_dir, 'llmcore.py'),
+    os.path.join(script_dir, 'agent_loop.py'),
+    # Memory (core identity files)
+    os.path.join(script_dir, 'memory', 'agent_prompt.txt'),
+    os.path.join(script_dir, 'memory', 'memory_management_sop.md'),
+    os.path.join(script_dir, 'memory', 'global_mem.txt'),
+    os.path.join(script_dir, 'memory', 'global_mem_insight.txt'),
+    # Keychain (all keys/secrets under this dir)
+    os.path.join(script_dir, 'memory', 'keychain'),
+    # System critical files
+    '/etc/passwd', '/etc/shadow', '/etc/sudoers', '/etc/crontab',
+    '/root/.ssh',  # all SSH keys
+    '/var/spool/cron',  # cron jobs
+]
+
+def is_protected_path(path):
+    """Return True if path matches a protected path (exact or prefix for dirs)."""
+    abs_path = os.path.abspath(path)
+    for p in PROTECTED_PATHS:
+        ap = os.path.abspath(p)
+        if abs_path == ap or abs_path.startswith(ap.rstrip('/') + '/'):
+            return True
+    return False
+
+# ─── Security: Risky Command Detection ───────────────────────────────────────
+# Block only truly destructive operations that could destroy data/system
+RISKY_PATTERNS = [
+    # rm -rf on critical directories (root, home, etc, var, usr, bin, boot, dev, root)
+    r'rm\s+(-[a-z]*[rf][a-z]*\s+)+(/|~|\$HOME)(\s|$)',                        # rm -rf / or ~
+    r'rm\s+(-[a-z]*[rf][a-z]*\s+)*/(home|etc|var|usr|bin|sbin|boot|dev|root|lib)(/|\s|$)',  # rm -rf /home, /etc, etc
+    r'rm\s+(-[a-z]*[rf][a-z]*\s+)+(\*|/\*)',                                  # rm -rf * or /*
+    # Raw disk operations
+    r'\bdd\s+.*of=/dev/(sd|hd|nvme|mmcblk)',                                  # dd to raw disk
+    r'mkfs(\.[a-z0-9]+)?\s+/dev/',                                            # format disk
+    r'>(\s*)/dev/(sd|hd|nvme|mmcblk)',                                        # write to raw disk
+    # Piping remote scripts to shell
+    r'curl.*\|\s*(ba)?sh',                                                    # curl | sh
+    r'wget.*\|\s*(ba)?sh',                                                    # wget | sh
+    # Privilege escalation
+    r'chmod\s+(-R\s+)?777\s+(/etc|/dev|/root|/boot|/usr|/bin|/sbin)',         # chmod 777 on system dirs
+    # System shutdown/restart
+    r'\b(shutdown|reboot|halt|poweroff)\b',                                   # shutdown/reboot
+    # Firewall flush
+    r'iptables\s+-F',                                                         # flush firewall
+    # Stop systemd
+    r'systemctl\s+(stop|disable|mask)\s+systemd',                             # stop systemd
+    # Fork bomb
+    r':\(\)\s*\{\s*:\|:\s*&\s*\}\s*;?\s*:',                                   # fork bomb
+    # Disk wipe
+    r'shdiskformat|diskpart.*clean\s+all',                                    # disk wipe
+    # Kill all processes
+    r'pkill\s+-9\s+-u\s+\w+\s*$',                                             # pkill -9 all user processes
+    r'kill\s+-9\s+-1',                                                        # kill all
+]
+RISKY_RE = re.compile('|'.join(RISKY_PATTERNS), re.IGNORECASE)
+
+def check_risky_command(code):
+    """Return match description if code contains risky pattern, else None."""
+    m = RISKY_RE.search(code)
+    if m:
+        return m.group(0)
+    return None
+# ─────────────────────────────────────────────────────────────────────────────
+
 def safe_print(*args, **kwargs):
     try: print(*args, **kwargs)
     except: pass
+
+def _kill_process_tree(process):
+    """Kill a process and all its children (process group on Unix, tree on Windows)."""
+    try:
+        if os.name == 'nt':
+            # Windows: taskkill /T kills the process tree
+            subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)],
+                           capture_output=True, timeout=5)
+        else:
+            # Unix: kill the entire process group (we set setpgrp)
+            pgid = os.getpgid(process.pid)
+            os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    finally:
+        try: process.kill()
+        except: pass
 
 def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop_signal=None, maxlen=10000, myprint=safe_print):
     """代码执行器
@@ -55,11 +141,14 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
         except: pass
 
     try:
+        # Process group for clean tree kill (Linux/macOS)
+        _preexec = os.setpgrp if os.name != 'nt' else None
         process = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             bufsize=0, cwd=cwd, startupinfo=startupinfo,
-            creationflags=0x08000000 if os.name == 'nt' else 0
+            creationflags=0x08000000 if os.name == 'nt' else 0,
+            preexec_fn=_preexec
         )
         start_t = time.time()
         t = threading.Thread(target=stream_reader, args=(process, full_stdout), daemon=True)
@@ -68,8 +157,8 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
         while t.is_alive():
             istimeout = time.time() - start_t > timeout
             if istimeout or stop_signal:
-                process.kill()
-                myprint("[Debug] Process killed due to timeout or stop signal.")
+                _kill_process_tree(process)
+                myprint("[Debug] Process tree killed due to timeout or stop signal.")
                 if istimeout: full_stdout.append("\n[Timeout Error] 超时强制终止")
                 else: full_stdout.append("\n[Stopped] 用户强制终止")
                 break
@@ -92,7 +181,7 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
             "exit_code": exit_code
         }
     except Exception as e:
-        if 'process' in locals(): process.kill()
+        if 'process' in locals(): _kill_process_tree(process)
         return {"status": "error", "msg": str(e)}
     finally:
         if code_type == "python" and tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
@@ -293,7 +382,12 @@ class GenericAgentHandler(BaseHandler):
         return int(l * multiplier / args.get('_tool_num', 1))
     def _get_abs_path(self, path):
         if not path: return ""
-        return os.path.abspath(os.path.join(self.cwd, path))   
+        resolved = os.path.normpath(os.path.join(self.cwd, path))
+        # Security: ensure resolved path stays within working directory
+        cwd = os.path.normpath(self.cwd)
+        if not (resolved == cwd or resolved.startswith(cwd + os.sep)):
+            raise PermissionError(f"Path escapes working directory: {path}")
+        return resolved   
 
     def _extract_code_block(self, response, code_type):
         code_type = {'python':'python|py', 'powershell':'powershell|ps1|pwsh', 'bash':'bash|sh|shell'}.get(code_type, re.escape(code_type))
@@ -312,7 +406,20 @@ class GenericAgentHandler(BaseHandler):
         raw_path = os.path.join(self.cwd, args.get("cwd", './'))
         cwd = os.path.normpath(os.path.abspath(raw_path))
         code_cwd = os.path.normpath(self.cwd)
+        # Security: code_run cwd must stay within working directory
+        if not (cwd == code_cwd or cwd.startswith(code_cwd + os.sep)):
+            return StepOutcome(f"[Error] code_run cwd escapes working directory: {args.get('cwd')}", next_prompt="\n")
         maxlen = self._get_tool_maxlen(10000, args)
+        # Security gate: risky command check for shell/bash
+        if code_type in ('shell', 'bash', 'powershell'):
+            risky = check_risky_command(code)
+            if risky and not args.get('_risky_override'):
+                yield f"[SECURITY] ⚠️  Деструктивная команда (pattern: `{risky}`)\n"
+                yield f"[SECURITY] Blocked. Re-run with `_risky_override: true` to confirm.\n"
+                return StepOutcome(
+                    f"[SECURITY] Blocked dangerous command (matched: `{risky}`). "
+                    f"Set `_risky_override: true` to override after user confirmation.",
+                    next_prompt="\n")
         if timeout > 600: result = '[ERROR] Timeout must be <= 600 seconds; code not executed. Run time-consuming code in the background instead of waiting for it to finish in the foreground, verify it started successfully, and monitor it until completion or failure.'
         elif code_type == 'python' and _arg(args, "inline_eval", False, bool):
             ns = {'handler':self, 'parent':self.parent, 'history':json.dumps(self.parent.llmclient.backend.history)}
@@ -380,6 +487,14 @@ class GenericAgentHandler(BaseHandler):
     
     def do_file_patch(self, args, response):
         path = self._get_abs_path(args.get("path", ""))
+        # Security gate: protected path check
+        if is_protected_path(path) and not args.get('_protected_override'):
+            yield f"[SECURITY] ⚠️  Protected path: {path}\n"
+            yield f"[SECURITY] Blocked. Set `_protected_override: true` to confirm.\n"
+            return StepOutcome(
+                f"[SECURITY] Protected path `{path}` — modification blocked. "
+                f"Set `_protected_override: true` to override after user confirmation.",
+                next_prompt="\n")
         yield f"[Action] Patching file: {path}\n"
         old_content = args.get("old_content", "")
         new_content = args.get("new_content", "")
@@ -396,6 +511,14 @@ class GenericAgentHandler(BaseHandler):
         '''用于对整个文件的大量处理，精细修改要用file_patch。
         需要将要写入的内容放在<file_content>标签内，或者放在代码块中'''
         path = self._get_abs_path(args.get("path", ""))
+        # Security gate: protected path check
+        if is_protected_path(path) and not args.get('_protected_override'):
+            yield f"[SECURITY] ⚠️  Protected path: {path}\n"
+            yield f"[SECURITY] Blocked. Set `_protected_override: true` to confirm.\n"
+            return StepOutcome(
+                f"[SECURITY] Protected path `{path}` — write blocked. "
+                f"Set `_protected_override: true` to override after user confirmation.",
+                next_prompt="\n")
         mode = args.get("mode", "overwrite")  # overwrite/append/prepend
         action_str = {"prepend": "Prepending to", "append": "Appending to"}.get(mode, "Overwriting")
         yield f"[Action] {action_str} file: {os.path.basename(path)}\n"
