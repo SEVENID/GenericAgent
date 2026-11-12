@@ -127,8 +127,8 @@ def plan(rundir):
     _show(); path = os.path.abspath(sys.argv[0]); code = open(path, encoding="utf-8").read()
     data = json.dumps({"path": path, "cwd": os.getcwd(), "rundir": _RUN_DIR, "task": _task_slug(path), "code": code}).encode("utf-8")
     _tok_file = os.path.join(_RUN_DIR, ".ultra_token")
-_tok = open(_tok_file).read().strip() if os.path.isfile(_tok_file) else ""
-r = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{_PORT}/exec", data=data, headers={"Content-Type":"application/json","X-UltraToken":_tok}), timeout=None)
+    _tok = open(_tok_file).read().strip() if os.path.isfile(_tok_file) else ""
+    r = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{_PORT}/exec", data=data, headers={"Content-Type":"application/json","X-UltraToken":_tok}), timeout=None)
     resp = json.loads(r.read().decode("utf-8")); sys.stdout.write(resp.get("stdout", "")); sys.stderr.write(resp.get("stderr", "")); sys.exit(resp.get("returncode", 1))
 
 @contextmanager
