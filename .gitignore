@@ -159,3 +159,8 @@ plugins/subscription_portal.py
 
 # Local-only model reload regression tests
 /frontends/tests/test_mykeys_reload.py
+
+# Local portable env (not for repo)
+.portable/
+env.sh
+uv.lock
