@@ -16,10 +16,10 @@ _rounds_cache_dirty = False
 
 def _rel_time(mtime):
     d = int(time.time() - mtime)
-    if d < 60: return f'{d}秒前'
-    if d < 3600: return f'{d // 60}分前'
-    if d < 86400: return f'{d // 3600}小时前'
-    return f'{d // 86400}天前'
+    if d < 60: return f'{d}s ago'
+    if d < 3600: return f'{d // 60}m ago'
+    if d < 86400: return f'{d // 3600}h ago'
+    return f'{d // 86400}d ago'
 
 def _pairs(content):
     blocks, pairs, pending = _BLOCK_RE.findall(content or ''), [], None
@@ -102,7 +102,7 @@ def _recent_context(my_pid, n=5):
         q, s = q[:60].strip(), s[:60].replace('\n', ' ').strip()
         out.append(f'· {m.group(1)} | lastQ: {q or "-"} | lastA: {s or "-"}')
         if len(out) >= n: break
-    return ('[RecentContext] 近期并行会话（非当前）:\n' + '\n'.join(out) + '\n[/RecentContext]') if out else ""
+    return ('[RecentContext] Recent parallel sessions (not current):\n' + '\n'.join(out) + '\n[/RecentContext]') if out else ""
 
 def _parse_native_history(pairs):
     history = []
@@ -418,8 +418,8 @@ def list_sessions(exclude_pid=None, exclude_log=None, rewind_root=None):
             except OSError:
                 mtime = 0
             head = d.get('head')
-            title = (nodes.get(head, {}).get('title') if head else '') or '（已回退至会话起点）'
-            out.append((log_path, mtime, f'[世界线] {title}', len(real)))
+            title = (nodes.get(head, {}).get('title') if head else '') or '(rewound to session start)'
+            out.append((log_path, mtime, f'[Worldline] {title}', len(real)))
     out.sort(key=lambda x: x[1], reverse=True)
     return out
 _MD_ESCAPE_RE = re.compile(r'([\\`*_\[\]])')
@@ -471,7 +471,7 @@ def _snapshot_current_log(pid=None):
     return snapshot
 
 
-def reset_conversation(agent, message='🆕 已开启新对话，当前上下文已清空'):
+def reset_conversation(agent, message='🆕 New conversation started, context cleared'):
     """Abort current work and clear all known frontend-visible conversation state."""
     try:
         agent.abort()
@@ -491,11 +491,11 @@ def reset_conversation(agent, message='🆕 已开启新对话，当前上下文
     return message
 
 def format_list(sessions, limit=20):
-    if not sessions: return '❌ 没有可恢复的历史会话'
-    lines = ['**可恢复会话**（输入 `/continue N` 恢复第 N 个）：', '']
+    if not sessions: return '❌ No restorable sessions found'
+    lines = ['**Restorable sessions** (type `/continue N` to restore #N):', '']
     for i, (_, mtime, first, n) in enumerate(sessions[:limit], 1):
-        preview = _escape_md((first or '（无法预览）').replace('\n', ' ')[:60])
-        lines.append(f'{i}. `{_rel_time(mtime)}` · **{n} 轮** · {preview}')
+        preview = _escape_md((first or '(no preview)').replace('\n', ' ')[:60])
+        lines.append(f'{i}. `{_rel_time(mtime)}` · **{n} turns** · {preview}')
     return '\n'.join(lines)
 
 def restore(agent, path):
@@ -503,22 +503,22 @@ def restore(agent, path):
     try:
         with open(path, encoding='utf-8', errors='replace') as fh:
             content = fh.read()
-    except Exception as e: return f'❌ 读取失败: {e}', False
+    except Exception as e: return f'❌ Read failed: {e}', False
     pairs = _pairs(content)
-    if not pairs: return f'❌ {os.path.basename(path)} 为空或格式不符', False
+    if not pairs: return f'❌ {os.path.basename(path)} is empty or malformed', False
     history = _parse_native_history(pairs)
     name = os.path.basename(path)
     if history is not None:
         agent.abort()
         _replace_backend_history(agent, history)
-        return f'✅ 已恢复 {len(pairs)} 轮完整对话（{name}）\n(已写入 backend.history，可直接继续)', True
+        return f'✅ Restored {len(pairs)} turns (full) — {name}\n(Written to backend.history, ready to continue)', True
     from chatapp_common import _restore_native_history, _restore_text_pairs
     summary = _restore_text_pairs(content) or _restore_native_history(content)
-    if not summary: return f'❌ {name} 无法解析（非 native 且无摘要可提取）', False
+    if not summary: return f'❌ Cannot parse {name} (not native, no extractable summary)', False
     agent.abort()
     agent.history.extend(summary)
     n = sum(1 for l in summary if l.startswith('[USER]: '))
-    return f'⚠️ 非 native 格式，已降级恢复 {n} 轮摘要（{name}）\n(请输入新问题继续)', False
+    return f'⚠️ Non-native format, restored {n} turns (summary) — {name}\n(Type a new message to continue)', False
 
 def handle(agent, query, display_queue):
     """Dispatch /continue or /continue N. Returns None if consumed else original query."""
@@ -531,7 +531,7 @@ def handle(agent, query, display_queue):
         sessions = list_sessions(exclude_pid=os.getpid())
         idx = int(m.group(1)) - 1
         if not (0 <= idx < len(sessions)):
-            display_queue.put({'done': f'❌ 索引越界（有效范围 1-{len(sessions)}）', 'source': 'system'})
+            display_queue.put({'done': f'❌ Index out of range (valid: 1-{len(sessions)})', 'source': 'system'})
             return None
         reset_conversation(agent, message=None)
         msg, _ = restore(agent, sessions[idx][0])
@@ -883,11 +883,11 @@ def handle_frontend_command(agent, query, exclude_pid=None):
         return format_list(list_sessions(exclude_pid=exclude_pid))
     m = re.match(r'/continue\s+(\d+)\s*$', s)
     if not m:
-        return '用法: /continue 或 /continue N'
+        return 'Usage: /continue or /continue N'
     sessions = list_sessions(exclude_pid=exclude_pid)
     idx = int(m.group(1)) - 1
     if not (0 <= idx < len(sessions)):
-        return f'❌ 索引越界（有效范围 1-{len(sessions)}）'
+        return f'❌ Index out of range (valid: 1-{len(sessions)})'
     reset_conversation(agent, message=None)
     msg, _ = restore(agent, sessions[idx][0])
     return msg
@@ -1110,25 +1110,25 @@ def _load_history_into(agent, path, restore_wm=False):
         with open(path, encoding='utf-8', errors='replace') as fh:
             content = fh.read()
     except Exception as e:
-        return f'❌ 读取失败: {e}', False
+        return f'❌ Read failed: {e}', False
     pairs = _pairs(content)
     if not pairs:
-        return f'❌ {os.path.basename(path)} 为空或格式不符', False
+        return f'❌ {os.path.basename(path)} is empty or malformed', False
     history = _parse_native_history(pairs)
     name = os.path.basename(path)
     if history is not None:
         _replace_backend_history(agent, history)
         if restore_wm and hasattr(agent, 'history'):
-            agent.history = _derive_hist_info(history)   # 续接恢复工作记忆(opt-in)
-        return f'✅ 已恢复 {len(pairs)} 轮完整对话（{name}）', True
+            agent.history = _derive_hist_info(history)   # restore working memory on continue (opt-in)
+        return f'✅ Restored {len(pairs)} turns (full) — {name}', True
     from chatapp_common import _restore_native_history, _restore_text_pairs
     summary = _restore_text_pairs(content) or _restore_native_history(content)
     if not summary:
-        return f'❌ {name} 无法解析（非 native 且无摘要可提取）', False
+        return f'❌ Cannot parse {name} (not native, no extractable summary)', False
     if hasattr(agent, 'history'):
         agent.history.extend(summary)
     n = sum(1 for l in summary if l.startswith('[USER]: '))
-    return f'⚠️ 非 native 格式，降级恢复 {n} 轮摘要（{name}）', False
+    return f'⚠️ Non-native format, restored {n} turns (summary) — {name}', False
 
 
 def _is_empty_log(path):
@@ -1148,7 +1148,7 @@ def continue_inplace(agent, path, agent_id=None, allow_empty=False, restore_wm=F
     try: agent.abort()
     except Exception: pass
     if not acquire_lock(path, agent_id):       # 先抢到目标锁;失败则保持现状,不丢自己的锁
-        return '❌ 会话已被占用，无法原地接管', False
+        return '❌ Session is locked by another process', False
     cur = getattr(agent, 'log_path', '') or ''
     if cur and os.path.basename(cur) != os.path.basename(path):
         release_lock(cur)                       # 目标到手,旧会话释放为空闲(同一文件则不放)
@@ -1156,7 +1156,7 @@ def continue_inplace(agent, path, agent_id=None, allow_empty=False, restore_wm=F
     msg, ok = _load_history_into(agent, path, restore_wm=restore_wm)
     if not ok and allow_empty and _is_empty_log(path):
         _replace_backend_history(agent, [])     # 空会话:清空对话(载入失败时它没被清)
-        return '✅ 已恢复空会话（回退至会话起点；世界线树已重连）', True
+        return '✅ Restored empty session (rewound to start; worldline tree reconnected)', True
     return msg, ok
 
 
@@ -1177,7 +1177,7 @@ def continue_copy(agent, path, agent_id=None, allow_empty=False, restore_wm=Fals
     msg, ok = _load_history_into(agent, newp, restore_wm=restore_wm)
     if not ok and allow_empty and _is_empty_log(newp):
         _replace_backend_history(agent, [])
-        return '✅ 已恢复空会话（回退至会话起点；世界线树已重连）', True
+        return '✅ Restored empty session (rewound to start; worldline tree reconnected)', True
     return msg, ok
 
 

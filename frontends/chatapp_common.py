@@ -6,33 +6,33 @@ if _parent_dir not in sys.path:
     sys.path.insert(0, _parent_dir)
 
 HELP_COMMANDS = (
-    ("/help", "显示帮助"),
-    ("/status", "查看状态"),
-    ("/stop", "停止当前任务"),
-    ("/new", "开启新对话并清空当前上下文"),
-    ("/restore", "恢复上次对话历史"),
-    ("/continue", "列出可恢复会话"),
-    ("/continue [n]", "恢复第 n 个会话"),
-    ("/btw <q>", "side question — 临时插问主 agent 进展，不打断主线"),
-    ("/review [scope]", "in-session code review; 默认审当前 git diff"),
-    ("/llm", "查看当前模型列表"),
-    ("/llm [n]", "切换到第 n 个模型"),
+    ("/help", "show help"),
+    ("/status", "check status"),
+    ("/stop", "stop current task"),
+    ("/new", "start new conversation & clear context"),
+    ("/restore", "restore last conversation"),
+    ("/continue", "list restorable sessions"),
+    ("/continue [n]", "restore session #n"),
+    ("/btw <q>", "side question — ask about progress without interrupting"),
+    ("/review [scope]", "in-session code review; default: current git diff"),
+    ("/llm", "show LLM list"),
+    ("/llm [n]", "switch to LLM #n"),
 )
 TELEGRAM_MENU_COMMANDS = (
-    ("help", "显示帮助"),
-    ("status", "查看状态"),
-    ("stop", "停止当前任务"),
-    ("new", "开启新对话并清空当前上下文"),
-    ("restore", "恢复上次对话历史"),
-    ("continue", "列出可恢复会话；/continue n 恢复第 n 个"),
-    ("btw", "临时插问主 agent 进展，不打断主线"),
-    ("review", "in-session code review；/review scope 指定范围"),
-    ("llm", "查看模型列表；/llm n 切换到指定模型"),
+    ("help", "show help"),
+    ("status", "check status"),
+    ("stop", "stop current task"),
+    ("new", "start new conversation & clear context"),
+    ("restore", "restore last conversation"),
+    ("continue", "list restorable sessions; /continue n to restore"),
+    ("btw", "side question without interrupting"),
+    ("review", "code review; /review scope for specific scope"),
+    ("llm", "LLM list; /llm n to switch"),
 )
 
 
 def build_help_text(commands=HELP_COMMANDS):
-    return "📖 命令列表:\n" + "\n".join(f"{cmd} - {desc}" for cmd, desc in commands)
+    return "📖 Commands:\n" + "\n".join(f"{cmd} - {desc}" for cmd, desc in commands)
 
 
 HELP_TEXT = build_help_text()
@@ -134,8 +134,8 @@ def _native_first_user_line(prompt_text):
         return ""
     if text.startswith(FILE_HINT):
         text = text[len(FILE_HINT):].lstrip()
-    if "### 用户当前消息" in text:
-        text = text.split("### 用户当前消息", 1)[-1].strip()
+    if "### Current user message" in text:
+        text = text.split("### Current user message", 1)[-1].strip()
     return text
 
 
@@ -190,13 +190,13 @@ def _restore_native_history(content):
 def format_restore():
     files = _restore_log_files()
     if not files:
-        return None, "❌ 没有找到历史记录"
+        return None, "❌ No history found"
     latest = max(files, key=os.path.getmtime)
     with open(latest, "r", encoding="utf-8") as f:
         content = f.read()
     restored = _restore_text_pairs(content) or _restore_native_history(content)
     if not restored:
-        return None, "❌ 历史记录里没有可恢复内容"
+        return None, "❌ No restorable content in history"
     count = sum(1 for line in restored if line.startswith("[USER]: "))
     return (restored, os.path.basename(latest), count), None
 
@@ -205,7 +205,7 @@ def build_done_text(raw_text):
     files = [p for p in extract_files(raw_text) if os.path.exists(p)]
     body = strip_files(clean_reply(raw_text))
     if files:
-        body = (body + "\n\n" if body else "") + "\n".join(f"生成文件: {p}" for p in files)
+        body = (body + "\n\n" if body else "") + "\n".join(f"📄 {p}" for p in files)
     return body or "..."
 
 
@@ -278,20 +278,20 @@ class AgentChatMixin:
             state = self.user_tasks.get(chat_id)
             if state:
                 state["running"] = False
-            self.agent.abort()
-            return await self.send_text(chat_id, "⏹️ 正在停止...", **ctx)
+            await asyncio.to_thread(self.agent.abort)
+            return await self.send_text(chat_id, "⏹️ Stopping...", **ctx)
         if op == "/status":
-            llm = self.agent.get_llm_name() if self.agent.llmclient else "未配置"
-            return await self.send_text(chat_id, f"状态: {'🔴 运行中' if self.agent.is_running else '🟢 空闲'}\nLLM: [{self.agent.llm_no}] {llm}", **ctx)
+            llm = self.agent.get_llm_name() if self.agent.llmclient else "not configured"
+            return await self.send_text(chat_id, f"Status: {'🔴 Running' if self.agent.is_running else '🟢 Idle'}\nLLM: [{self.agent.llm_no}] {llm}", **ctx)
         if op == "/llm":
             if not self.agent.llmclient:
-                return await self.send_text(chat_id, "❌ 当前没有可用的 LLM 配置", **ctx)
+                return await self.send_text(chat_id, "❌ No LLM configured", **ctx)
             if len(parts) > 1:
                 try:
                     self.agent.next_llm(int(parts[1]))
-                    return await self.send_text(chat_id, f"✅ 已切换到 [{self.agent.llm_no}] {self.agent.get_llm_name()}", **ctx)
+                    return await self.send_text(chat_id, f"✅ Switched to [{self.agent.llm_no}] {self.agent.get_llm_name()}", **ctx)
                 except Exception:
-                    return await self.send_text(chat_id, f"用法: /llm <0-{len(self.agent.list_llms()) - 1}>", **ctx)
+                    return await self.send_text(chat_id, f"Usage: /llm <0-{len(self.agent.list_llms()) - 1}>", **ctx)
             lines = [f"{'→' if cur else '  '} [{i}] {name}" for i, name, cur in self.agent.list_llms()]
             return await self.send_text(chat_id, "LLMs:\n" + "\n".join(lines), **ctx)
         if op == "/restore":
@@ -300,11 +300,11 @@ class AgentChatMixin:
                 if err:
                     return await self.send_text(chat_id, err, **ctx)
                 restored, fname, count = restored_info
-                self.agent.abort()
+                await asyncio.to_thread(self.agent.abort)
                 self.agent.history.extend(restored)
-                return await self.send_text(chat_id, f"✅ 已恢复 {count} 轮对话\n来源: {fname}\n(仅恢复上下文，请输入新问题继续)", **ctx)
+                return await self.send_text(chat_id, f"✅ Restored {count} turns\nSource: {fname}\n(Context only restored - send a new message to continue)", **ctx)
             except Exception as e:
-                return await self.send_text(chat_id, f"❌ 恢复失败: {e}", **ctx)
+                return await self.send_text(chat_id, f"❌ Restore failed: {e}", **ctx)
         if op == "/continue":
             return await self.send_text(chat_id, _handle_continue_frontend(self.agent, cmd), **ctx)
         if op == "/new":
@@ -320,7 +320,7 @@ class AgentChatMixin:
         state = {"running": True}
         self.user_tasks[chat_id] = state
         try:
-            await self.send_text(chat_id, "思考中...", **ctx)
+            await self.send_text(chat_id, "Thinking...", **ctx)
             dq = self.agent.put_task(f"{FILE_HINT}\n\n{text}", source=self.source)
             last_ping = time.time()
             while state["running"]:
@@ -328,19 +328,19 @@ class AgentChatMixin:
                     item = await asyncio.to_thread(dq.get, True, 3)
                 except Q.Empty:
                     if self.agent.is_running and time.time() - last_ping > self.ping_interval:
-                        await self.send_text(chat_id, "⏳ 还在处理中，请稍等...", **ctx)
+                        await self.send_text(chat_id, "⏳ Still processing, please wait...", **ctx)
                         last_ping = time.time()
                     continue
                 if "done" in item:
                     await self.send_done(chat_id, item.get("done", ""), **ctx)
                     break
             if not state["running"]:
-                await self.send_text(chat_id, "⏹️ 已停止", **ctx)
+                await self.send_text(chat_id, "⏹️ Stopped", **ctx)
         except Exception as e:
             import traceback
             print(f"[{self.label}] run_agent error: {e}")
             traceback.print_exc()
-            await self.send_text(chat_id, f"❌ 错误: {e}", **ctx)
+            await self.send_text(chat_id, f"❌ Error: {e}", **ctx)
         finally:
             self.user_tasks.pop(chat_id, None)
 

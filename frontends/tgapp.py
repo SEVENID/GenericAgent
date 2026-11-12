@@ -1022,7 +1022,7 @@ async def handle_llm_callback(update, ctx):
 
 async def cmd_abort(update, ctx):
     _cancel_stream_task(ctx)
-    agent.abort()
+    await asyncio.to_thread(agent.abort)
     await update.message.reply_text("⏹️ Stopping...")
 
 async def cmd_llm(update, ctx):
@@ -1086,7 +1086,7 @@ async def handle_command(update, ctx):
             if err:
                 return await update.message.reply_text(err)
             restored, fname, count = restored_info
-            agent.abort()
+            await asyncio.to_thread(agent.abort)
             agent.history.extend(restored)
             return await update.message.reply_text(f"✅ Restored {count} conversation turns\nSource: {fname}\n(Context only restored - send a new message to continue)")
         except Exception as e:
