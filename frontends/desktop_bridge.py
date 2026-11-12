@@ -1149,7 +1149,7 @@ class AgentManager:
                             msg['content'] = [{"type": "text", "text": msg.get('content', '')}]
                             _inject_images(msg['content'])
                         break
-                return yield from original_chat(messages, tools)
+                return original_chat(messages, tools)
 
             client.chat = patched_chat
         else:
