@@ -76,6 +76,7 @@ _SUBAGENT_GLOB = os.path.join("temp", "*", "stdout.log")
 _ledger_path: Path | None = None
 _ledger_fd = None
 _ledger_lock = threading.RLock()
+_pending_appends: list[str] = []  # buffer for appends during compaction
 _ledger_uncompacted_bytes = 0
 _LEDGER_FILENAME = "token_ledger.jsonl"
 _LEGACY_HISTORY_FILENAME = "desktop_token_history.json"
@@ -166,12 +167,22 @@ def _append_ledger(thread_key: str, inp: int, out: int, cc: int, cr: int) -> Non
     # init_ledger(). Keep their historical hot path to one lock-free branch:
     # no clock lookup, JSON encoding, byte counting, or ledger lock acquisition.
     if _ledger_fd is None:
+        # Buffer append during compaction window (prevents silent data loss)
+        with _ledger_lock:
+            _pending_appends.append(json.dumps(
+                {"t": time.time(), "k": thread_key, "i": inp, "o": out, "cc": cc, "cr": cr},
+                separators=(",", ":"),
+            ) + "\n")
         return
     line = json.dumps(
         {"t": time.time(), "k": thread_key, "i": inp, "o": out, "cc": cc, "cr": cr},
         separators=(",", ":"),
     ) + "\n"
     with _ledger_lock:
+        if _ledger_fd is None:
+            # Re-check under lock: compaction may have started
+            _pending_appends.append(line)
+            return
         if _ledger_fd is None:
             return
         try:
@@ -299,6 +310,12 @@ def _compact_ledger() -> None:
             os.replace(temp_path, _ledger_path)
             _ledger_fd = open(_ledger_path, "a", encoding="utf-8")
             _ledger_uncompacted_bytes = 0
+            # Flush any appends that were buffered during compaction
+            if _pending_appends:
+                for pending in _pending_appends:
+                    _ledger_fd.write(pending)
+                _pending_appends.clear()
+                _ledger_fd.flush()
         except Exception:
             try:
                 temp_path.unlink(missing_ok=True)
@@ -307,6 +324,11 @@ def _compact_ledger() -> None:
             if _ledger_fd is None:
                 try:
                     _ledger_fd = open(_ledger_path, "a", encoding="utf-8")
+                    if _pending_appends:
+                        for pending in _pending_appends:
+                            _ledger_fd.write(pending)
+                        _pending_appends.clear()
+                        _ledger_fd.flush()
                 except Exception:
                     pass
 

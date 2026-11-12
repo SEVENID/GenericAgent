@@ -293,19 +293,32 @@ def _arg(args, name, default, type=None):
         return default if v is None else bool(v)
     return v
 
+_file_locks = {}
+_file_locks_guard = threading.Lock()
+
+def _get_file_lock(path):
+    """Get a per-file lock to prevent concurrent write races."""
+    path = str(Path(path).resolve())
+    with _file_locks_guard:
+        if path not in _file_locks:
+            _file_locks[path] = threading.Lock()
+        return _file_locks[path]
+
 def file_patch(path: str, old_content: str, new_content: str):
     """在文件中寻找唯一的 old_content 块并替换为 new_content"""
     path = str(Path(path).resolve())
+    lock = _get_file_lock(path)
     try:
-        if not os.path.exists(path): return {"status": "error", "msg": "file not found"}
-        with open(path, 'r', encoding='utf-8') as f: full_text = f.read()
-        if not old_content: return {"status": "error", "msg": "old_content is blank"}
-        count = full_text.count(old_content)
-        if count == 0: return {"status": "error", "msg": "old_content is not found. Suggestion: use file_read to check current file content, make more small patches. Don't huge overwrite (even with code)"}
-        if count > 1: return {"status": "error", "msg": f"find {count} matches, unable to determine unique position. Provide a longer, more specific old_content to ensure uniqueness. Suggestion: include context lines to enhance features, or modify in smaller segments."}
-        updated_text = full_text.replace(old_content, new_content)
-        with open(path, 'w', encoding='utf-8', newline=_file_newline(path)) as f: f.write(updated_text)
-        return {"status": "success", "msg": "file patched successfully"}
+        with lock:
+            if not os.path.exists(path): return {"status": "error", "msg": "file not found"}
+            with open(path, 'r', encoding='utf-8') as f: full_text = f.read()
+            if not old_content: return {"status": "error", "msg": "old_content is blank"}
+            count = full_text.count(old_content)
+            if count == 0: return {"status": "error", "msg": "old_content is not found. Suggestion: use file_read to check current file content, make more small patches. Don't huge overwrite (even with code)"}
+            if count > 1: return {"status": "error", "msg": f"find {count} matches, unable to determine unique position. Provide a longer, more specific old_content to ensure uniqueness. Suggestion: include context lines to enhance features, or modify in smaller segments."}
+            updated_text = full_text.replace(old_content, new_content)
+            with open(path, 'w', encoding='utf-8', newline=_file_newline(path)) as f: f.write(updated_text)
+            return {"status": "success", "msg": "file patched successfully"}
     except Exception as e: return {"status": "error", "msg": str(e)}
 
 _read_dirs = set()
