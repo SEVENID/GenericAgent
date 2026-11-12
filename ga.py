@@ -553,8 +553,20 @@ class GenericAgentHandler(BaseHandler):
         try:
             new_content = expand_file_refs(content, base_dir=self.cwd)
             if mode == "prepend":
-                old = open(path, 'r', encoding="utf-8").read() if os.path.exists(path) else ""
-                open(path, 'w', encoding="utf-8", newline=_file_newline(path)).write(new_content + old)
+                with open(path, 'r', encoding="utf-8") as _f: old_data = _f.read() if os.path.exists(path) else ""
+                _full = new_content + old_data
+                # Atomic write: tmpfile + rename to prevent data loss
+                import tempfile
+                _dir = os.path.dirname(path) or '.'
+                _fd, _tmp = tempfile.mkstemp(dir=_dir, prefix='.filewrite_')
+                try:
+                    with os.fdopen(_fd, 'w', encoding="utf-8", newline=_file_newline(path)) as _tf:
+                        _tf.write(_full)
+                    os.replace(_tmp, path)
+                except BaseException:
+                    try: os.unlink(_tmp)
+                    except OSError: pass
+                    raise
             else:
                 with open(path, 'a' if mode == "append" else 'w', encoding="utf-8", newline=_file_newline(path)) as f: f.write(new_content)
             yield f"[Status] ✅ {mode.capitalize()} 成功 ({len(new_content)} bytes)\n"

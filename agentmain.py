@@ -124,9 +124,10 @@ class GenericAgent:
     def get_ctx_multiplier(self): return getattr(self.llmclient.backend, 'maxlen_multiplier', 1.0)
 
     def abort(self):
-        if not self.is_running: return
-        print('Abort current task...')
-        self.stop_sig = True
+        with self._model_lock:
+            if not self.is_running: return
+            print('Abort current task...')
+            self.stop_sig = True
         if self.handler is not None: self.handler.code_stop_signal.append(1)
         for sess in getattr(self.llmclient.backend, '_sessions', [self.llmclient.backend]):
             sess.should_stop = lambda: self.stop_sig  # live read; cleared by run()'s finally
