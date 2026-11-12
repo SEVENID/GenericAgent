@@ -168,6 +168,22 @@ class GenericAgent:
             task = self.task_queue.get()
             if isinstance(task, str): break
             raw_query, source, display_queue = task["query"], task["source"], task["output"]
+            _images = task.get("images") or []
+            _initial_content = None
+            if _images:
+                import base64, mimetypes
+                _blocks = []
+                for _img in _images:
+                    _path = _img if isinstance(_img, str) else (_img or {}).get("path", "")
+                    if not _path: continue
+                    try:
+                        _data = open(_path, "rb").read()
+                        _mime = mimetypes.guess_type(_path)[0] or "image/png"
+                        _blocks.append({"type": "image", "source": {"type": "base64", "media_type": _mime, "data": base64.b64encode(_data).decode()}})
+                    except Exception: pass
+                if _blocks:
+                    _blocks.append({"type": "text", "text": raw_query})
+                    _initial_content = _blocks
             full_resp = ""; last_pos = 0; curr_turn = 0; turn_resps = []
             try:
                 with self._model_lock:
@@ -198,7 +214,8 @@ class GenericAgent:
                     self.llmclient.backend.stream = False
                     self.llmclient.backend.read_timeout = max(self.llmclient.backend.read_timeout, 1200)
                 gen = agent_runner_loop(self.llmclient, sys_prompt, raw_query, handler, TOOLS_SCHEMA,
-                                        max_turns=180, verbose=self.verbose, yield_info=True)
+                                        max_turns=180, verbose=self.verbose, yield_info=True,
+                                        initial_user_content=_initial_content)
                 for chunk in gen:
                     if consume_file(self.task_dir, '_stop'): self.abort() 
                     if self.stop_sig: break
