@@ -179,7 +179,7 @@ def _parse_claude_json(data):
 
 def _raise_if_retryable_overload(emsg):
     """HTTP 200 SSE/body overload → ConnectionError so _stream_with_retry can backoff."""
-    if emsg and re.search(r'concurrency|retry later|overloaded|rate.?limit', emsg, re.I):
+    if emsg and re.search(r'concurrency|retry later|overloaded|rate.?limit|temporarily unavail|too many requests|high demand|capacity|server is busy|try again later', emsg, re.I):
         raise requests.ConnectionError(emsg)
 
 def _parse_claude_sse(resp_lines):
