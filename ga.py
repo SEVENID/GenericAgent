@@ -613,7 +613,7 @@ class GenericAgentHandler(BaseHandler):
         if not response or (not content.strip() and not thinking.strip()):
             yield "[Warn] LLM returned an empty response. Retrying...\n"
             return self._retry_or_exit("[ERROR] Blank response, regenerate and tooluse")
-        if '[!!! 流异常中断' in content[-100:] or '!!!Error:' in content[50:][-100:] or (content.endswith('</summary>') and len(content) < 100):
+        if any(m in content[-30:] for m in ('[!!! 流异常中断', '!!!Error:', 'Response truncated: max_tokens', 'output truncated:')) or (content.endswith('</summary>') and len(content) < 100):
             return self._retry_or_exit("[ERROR] Incomplete response. Regenerate and tooluse.")
         # #837 fix: DSML leak detection - check entire content, not just tail
         if 'DSML' in content and '｜' in content:
