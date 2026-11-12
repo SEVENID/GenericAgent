@@ -854,9 +854,25 @@ def _normalized_command(text):
     if head.startswith('/'): head = '/' + head[1:].split('@', 1)[0]
     return head + (f" {parts[1].strip()}" if len(parts) > 1 and parts[1].strip() else '')
 
+_active_stream_tasks: set[asyncio.Task] = set()
+
+
+def _register_stream_task(task: asyncio.Task) -> None:
+    _active_stream_tasks.add(task)
+    task.add_done_callback(_active_stream_tasks.discard)
+
+
 def _cancel_stream_task(ctx):
     task = ctx.user_data.pop('stream_task', None)
     if task and not task.done(): task.cancel()
+
+
+def _shutdown_active_tasks() -> None:
+    """Cancel all in-flight stream tasks (called on polling crash)."""
+    for task in list(_active_stream_tasks):
+        task.cancel()
+    if _active_stream_tasks:
+        print(f"[TG] Cancelled {len(_active_stream_tasks)} active stream task(s)", flush=True)
 
 async def _sync_commands(application):
     await application.bot.set_my_commands([BotCommand(command, description) for command, description in TELEGRAM_MENU_COMMANDS])
@@ -890,6 +906,7 @@ async def _handle_review_command(update, ctx, cmd):
     task_dq = agent.put_task(prompt, source="telegram")
     task = asyncio.create_task(_stream(task_dq, update.message))
     ctx.user_data['stream_task'] = task
+    _register_stream_task(task)
 
 async def handle_msg(update, ctx):
     uid = update.effective_user.id
@@ -899,6 +916,7 @@ async def handle_msg(update, ctx):
     dq = agent.put_task(prompt, source="telegram")
     task = asyncio.create_task(_stream(dq, update.message))
     ctx.user_data['stream_task'] = task
+    _register_stream_task(task)
 
 async def handle_ask_callback(update, ctx):
     query = update.callback_query
@@ -953,6 +971,7 @@ async def handle_ask_callback(update, ctx):
         dq = agent.put_task(_build_text_prompt(selected), source="telegram")
         task = asyncio.create_task(_stream(dq, query.message))
         ctx.user_data['stream_task'] = task
+        _register_stream_task(task)
         return
     if action == _ASK_CANCEL_ACTION:
         _ask_menu_store.pop(menu_id, None)
@@ -973,6 +992,7 @@ async def handle_ask_callback(update, ctx):
     dq = agent.put_task(_build_text_prompt(selected), source="telegram")
     task = asyncio.create_task(_stream(dq, query.message))
     ctx.user_data['stream_task'] = task
+    _register_stream_task(task)
 
 async def _send_llm_menu(message):
     llms = agent.list_llms()
@@ -1058,6 +1078,7 @@ async def handle_photo(update, ctx):
     dq = agent.put_task(prompt, source="telegram")
     task = asyncio.create_task(_stream(dq, update.message))
     ctx.user_data['stream_task'] = task
+    _register_stream_task(task)
 
 async def handle_command(update, ctx):
     uid = update.effective_user.id
@@ -1145,5 +1166,10 @@ if __name__ == '__main__':
             app.run_polling(drop_pending_updates=True, poll_interval=1.0, timeout=30)
         except Exception as e:
             print(f"[{time.strftime('%m-%d %H:%M')}] polling crashed: {e}", flush=True)
+            _shutdown_active_tasks()
+            try:
+                agent.abort()
+                print(f"[{time.strftime('%m-%d %H:%M')}] agent aborted after polling crash", flush=True)
+            except Exception as ae:
+                print(f"[{time.strftime('%m-%d %H:%M')}] agent abort failed: {ae}", flush=True)
             time.sleep(10)
-            asyncio.set_event_loop(asyncio.new_event_loop())
