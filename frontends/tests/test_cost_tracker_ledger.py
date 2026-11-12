@@ -38,31 +38,29 @@ def teardown_function() -> None:
     _close_ledger()
 
 
-def test_uninitialized_append_returns_before_clock_json_and_lock(monkeypatch):
-    class ForbiddenLock:
-        def __enter__(self):
-            raise AssertionError("uninitialized TUI path acquired the ledger lock")
+def test_uninitialized_append_buffers_in_memory_without_file_io(monkeypatch):
+    """When no ledger file is initialized, data is buffered in memory.
+    Verify: no file I/O, lock is used, entries land in _pending_appends."""
+    import io
+    opened_files = []
+    orig_open = open
+    def spy_open(*args, **kwargs):
+        opened_files.append(args)
+        return orig_open(*args, **kwargs)
+    monkeypatch.setattr("builtins.open", spy_open)
 
-        def __exit__(self, *_args):
-            return False
-
-    monkeypatch.setattr(
-        cost_tracker.json,
-        "dumps",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("uninitialized TUI path serialized JSON")
-        ),
-    )
-    monkeypatch.setattr(
-        cost_tracker.time,
-        "time",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("uninitialized TUI path read the clock")
-        ),
-    )
-    monkeypatch.setattr(cost_tracker, "_ledger_lock", ForbiddenLock())
-
+    cost_tracker._pending_appends.clear()
     cost_tracker._append_ledger("tui-main", 1, 2, 3, 4)
+
+    # No file was opened
+    assert not opened_files
+    # Entry was buffered
+    assert len(cost_tracker._pending_appends) == 1
+    import json as _json
+    entry = _json.loads(cost_tracker._pending_appends[0])
+    assert entry["k"] == "tui-main"
+    assert entry["i"] == 1 and entry["o"] == 2 and entry["cc"] == 3 and entry["cr"] == 4
+    cost_tracker._pending_appends.clear()
 
 
 def test_public_tracker_and_context_interfaces_keep_tui_semantics(monkeypatch):
@@ -189,8 +187,10 @@ def test_concurrent_appends_are_serialized(tmp_path, monkeypatch):
 
 
 def test_threshold_compaction_runs_during_process_lifetime(tmp_path, monkeypatch):
+    cost_tracker._pending_appends.clear()  # isolate from other tests
     monkeypatch.setattr(cost_tracker, "_COMPACT_THRESHOLD", 1)
     cost_tracker.init_ledger(str(tmp_path))
+    cost_tracker._pending_appends.clear()  # discard any flushed residuals
 
     cost_tracker._append_ledger("GA-sess-1", 10, 7, 2, 3)
 

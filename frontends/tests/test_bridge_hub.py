@@ -6,6 +6,9 @@ import sys
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
+pytest.importorskip("websockets")
+
 from test_bridge_sessions import manager, tmp_ga_root, _mod, _make_stub
 from frontends import hub
 

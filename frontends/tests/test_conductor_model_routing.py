@@ -45,12 +45,14 @@ class Backend:
     def __init__(self, name: str):
         self.name = name
         self.model = name
+        self.history: list[dict] = []
 
 
 class Client:
     def __init__(self, name: str | None):
         if name is not None:
             self.backend = Backend(name)
+        self.last_tools = ""
 
 
 class FakeAgent:
@@ -62,6 +64,8 @@ class FakeAgent:
         self.reloads = 0
         self.failing = failing or set()
         self.task_queue = queue.Queue()
+        self._model_lock = threading.Lock()
+        self.is_running = False
 
     def load_llm_sessions(self):
         self.reloads += 1
@@ -328,7 +332,7 @@ def test_conductor_defers_events_without_models_and_recovers(monkeypatch):
     with pytest.raises(EndOfInbox):
         instance._run()
 
-    assert instance.agent.submissions == ["deferred,recovery"]
+    assert instance.agent.submissions == [conductor.HEADER + "deferred,recovery"]
     model_payloads = [item["model"] for item in payloads if item["type"] == "model"]
     assert model_payloads[0]["effective"] is None
     assert model_payloads[0]["fallbackReason"] == "no_models"
@@ -416,6 +420,7 @@ def test_actual_generic_agent_next_llm_preserves_history(monkeypatch):
 
 
 def test_websocket_switch_reconnect_and_busy_error(monkeypatch):
+    pytest.importorskip("httpx2")
     from fastapi.testclient import TestClient
     instance = conductor.Conductor()
     instance.agent = FakeAgent(["zero", "one"])

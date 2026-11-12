@@ -5,9 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 TAURI_ROOT = ROOT / "frontends" / "desktop" / "src-tauri"
+
+CONF_FILE = TAURI_ROOT / "tauri.conf.json"
+pytestmark = pytest.mark.skipif(not CONF_FILE.exists(), reason="tauri.conf.json not in repo (gitignored)")
 
 
 def _json(path: Path) -> dict:

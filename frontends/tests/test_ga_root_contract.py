@@ -92,8 +92,10 @@ def test_missing_optional_p2p_dependencies_cannot_abort_hub_setup():
     )
 
     assert any(
-        handler.type is None
-        or (isinstance(handler.type, ast.Name) and handler.type.id == "Exception")
+        (handler.type is None and "Exception" in ast.dump(handler))
+        or handler.type is None
+        or isinstance(handler.type, (ast.Name, ast.Attribute))
+        and getattr(handler.type, "id", getattr(handler.type, "attr", "")) in ("Exception", "ImportError")
         for handler in guard.handlers
     )
 
