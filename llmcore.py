@@ -1064,7 +1064,10 @@ class MixinSession:
             try:
                 while True:
                     chunk = next(gen); last_chunk = chunk
-                    if not yielded and test_error(chunk): continue
+                    if test_error(chunk):
+                        if yielded:
+                            break  # #798: don't yield error after partial content
+                        continue
                     yield chunk; yielded = True
             except StopIteration as e: return_val = e.value or []
             is_err = test_error(last_chunk)
